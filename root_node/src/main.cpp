@@ -4,6 +4,13 @@
 // OLED1 (bus Wire,  SDA=21 SCL=22): Nhiệt độ / Độ ẩm realtime
 // OLED2 (bus Wire1, SDA=18 SCL=19): RTT / Loss / Throughput / Entropy
 //
+// Thư viện cần thêm vào platformio.ini:
+//   lib_deps =
+//     painlessMesh
+//     AsyncTCP
+//     adafruit/Adafruit SSD1306
+//     adafruit/Adafruit GFX Library
+// =====================================================
 
 #include <Arduino.h>
 #include "painlessMesh.h"
@@ -42,6 +49,9 @@ TwoWire              Wire1_bus = TwoWire(1);
 Adafruit_SSD1306     display1(SCREEN_W, SCREEN_H, &Wire,      -1);
 Adafruit_SSD1306     display2(SCREEN_W, SCREEN_H, &Wire1_bus, -1);
 
+bool oled1Ready = false;
+bool oled2Ready = false;
+
 // ── Metrics theo path ────────────────────────────────
 struct PathMetrics {
     // Packet loss
@@ -63,6 +73,18 @@ struct PathMetrics {
     // Đây là max mutual information I(X;Y) theo Shannon-Hartley
     float    capacity = 0;      // bits/s
     float    capacityMbps = 0;  // Mbps để dễ đọc
+    uint32_t lastReceiveTime = 0;  // millis() lần cuối nhận gói
+
+#define PATH_TIMEOUT 10000  // ms không nhận gói → coi path dead
+    float activeCapacityMbps() {
+        if (lastReceiveTime == 0) return 0;
+        if (millis() - lastReceiveTime > PATH_TIMEOUT) return 0;
+        return capacityMbps;
+    }
+    bool isAlive() {
+        return (lastReceiveTime > 0) &&
+               (millis() - lastReceiveTime < PATH_TIMEOUT);
+    }
 
     // Dữ liệu sensor mới nhất
     float    lastTemp = 0;
@@ -178,9 +200,39 @@ struct EntropyCalc {
 // OLED1: cập nhật liên tục khi có DATA mới — nhiệt độ + độ ẩm
 // OLED2: cập nhật theo task 5s — metrics tính toán
 
+// ── Init OLED với retry ──────────────────────────────
+bool tryInitOLED1() {
+    if (!display1.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) return false;
+    display1.ssd1306_command(SSD1306_DISPLAYON);   // tường minh bật màn
+    delay(10);
+    display1.clearDisplay();
+    display1.setTextSize(1);
+    display1.setTextColor(SSD1306_WHITE);
+    display1.setCursor(0, 20);
+    display1.println("  OLED1: Sensor Data");
+    display1.display();
+    Serial.println("[ROOT] OLED1 OK");
+    return true;
+}
+
+bool tryInitOLED2() {
+    if (!display2.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) return false;
+    display2.ssd1306_command(SSD1306_DISPLAYON);   // tường minh bật màn
+    delay(10);
+    display2.clearDisplay();
+    display2.setTextSize(1);
+    display2.setTextColor(SSD1306_WHITE);
+    display2.setCursor(0, 20);
+    display2.println("  OLED2: Metrics");
+    display2.display();
+    Serial.println("[ROOT] OLED2 OK");
+    return true;
+}
+
 void drawOLED1() {
-    bool aAlive = (pmA.received > 0);
-    bool bAlive = (pmB.received > 0);
+    display1.ssd1306_command(SSD1306_DISPLAYON);
+    bool aAlive = pmA.isAlive();
+    bool bAlive = pmB.isAlive();
     bool multipath = aAlive && bAlive;
 
     // Timeout: không nhận data quá 10s → báo mất tín hiệu
@@ -229,8 +281,9 @@ void drawOLED1() {
 }
 
 void drawOLED2() {
-    bool aAlive = (pmA.received > 0);
-    bool bAlive = (pmB.received > 0);
+    display2.ssd1306_command(SSD1306_DISPLAYON);
+    bool aAlive = pmA.isAlive();
+    bool bAlive = pmB.isAlive();
     bool multipath = aAlive && bAlive;
 
     uint32_t minA = pmA.rttMin == UINT32_MAX ? 0 : pmA.rttMin;
@@ -265,15 +318,36 @@ void drawOLED2() {
                     pmA.avgRSSI(), pmB.avgRSSI());
     display2.printf("LOSS:%.1f%%\n", lossRate);
     display2.printf("C_A:%.1fM C_B:%.1fM\n",
-                    pmA.capacityMbps, pmB.capacityMbps);
+                    pmA.activeCapacityMbps(), pmB.activeCapacityMbps());
     display2.printf("H(T):%.2f H(H):%.2f b\n",
                     entropy.tempEntropy(), entropy.humEntropy());
     display2.display();
 }
 
+#define OLED_RETRY_INTERVAL 5000   // ms thử lại nếu OLED chưa sáng
+uint32_t oledLastRetry = 0;
+
 Task oledTask(OLED_UPDATE_INTERVAL, TASK_FOREVER, []() {
-    drawOLED1();   // OLED1 chạy độc lập, không phụ thuộc data
-    drawOLED2();   // OLED2 metrics
+    uint32_t now = millis();
+
+    // Thử init lại OLED nếu chưa ready (mỗi 5s)
+    if ((!oled1Ready || !oled2Ready) &&
+        (now - oledLastRetry > OLED_RETRY_INTERVAL)) {
+        oledLastRetry = now;
+        if (!oled1Ready) {
+            oled1Ready = tryInitOLED1();
+            if (!oled1Ready)
+                Serial.println("[ROOT] OLED1 retry failed");
+        }
+        if (!oled2Ready) {
+            oled2Ready = tryInitOLED2();
+            if (!oled2Ready)
+                Serial.println("[ROOT] OLED2 retry failed");
+        }
+    }
+
+    if (oled1Ready) drawOLED1();
+    if (oled2Ready) drawOLED2();
 });
 
 // ── Ping task ────────────────────────────────────────
@@ -423,8 +497,9 @@ void handleData(uint32_t from, String &msg) {
     // Cập nhật metrics path
     pm->rssiLast     = rssi;
     pm->rssiSum     += rssi;
-    pm->capacity     = calcCapacity(rssi);
-    pm->capacityMbps = pm->capacity / 1e6f;
+    pm->capacity         = calcCapacity(rssi);
+    pm->capacityMbps     = pm->capacity / 1e6f;
+    pm->lastReceiveTime  = millis();
     if (pm->lastSeq > 0 && seqNum > pm->lastSeq + 1)
         pm->lost += seqNum - pm->lastSeq - 1;
     pm->lastSeq = seqNum;
@@ -485,9 +560,9 @@ void handleData(uint32_t from, String &msg) {
     Serial.printf("  TEMP   : %.1f C\n",       isnan(temp)?0:temp);
     Serial.printf("  HUM    : %.1f %%\n",      isnan(hum)?0:hum);
     Serial.printf("  RSSI_A : %d dBm  CAP_A=%.2f Mbps\n",
-                  pmA.rssiLast, pmA.capacityMbps);
+                  pmA.rssiLast, pmA.activeCapacityMbps());
     Serial.printf("  RSSI_B : %d dBm  CAP_B=%.2f Mbps\n",
-                  pmB.rssiLast, pmB.capacityMbps);
+                  pmB.rssiLast, pmB.activeCapacityMbps());
     Serial.printf("  LOSS_A : %.1f%%  LOSS_B: %.1f%%\n",
                   pmA.lossRate(), pmB.lossRate());
     Serial.printf("  H(T)   : %.3f bits\n",    entropy.tempEntropy());
@@ -532,37 +607,20 @@ void receivedCallback(uint32_t from, String &msg) {
 void setup() {
     Serial.begin(115200);
 
-    // OLED1 init — bus Wire (SDA=21, SCL=22)
-    Wire.begin(21, 22);
-    if (!display1.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
-        Serial.println("[ROOT] OLED1 not found");
-    } else {
-        display1.clearDisplay();
-        display1.setTextSize(1);
-        display1.setTextColor(SSD1306_WHITE);
-        display1.setCursor(0, 20);
-        display1.println("  OLED1: Sensor Data");
-        display1.display();
-        Serial.println("[ROOT] OLED1 OK");
-    }
-
-    // OLED2 init — bus Wire1 (SDA=18, SCL=19)
-    Wire1_bus.begin(18, 19);
-    if (!display2.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
-        Serial.println("[ROOT] OLED2 not found");
-    } else {
-        display2.clearDisplay();
-        display2.setTextSize(1);
-        display2.setTextColor(SSD1306_WHITE);
-        display2.setCursor(0, 20);
-        display2.println("  OLED2: Metrics");
-        display2.display();
-        Serial.println("[ROOT] OLED2 OK");
-    }
-
+    // Init mesh TRƯỚC — WiFi stack reset I2C nếu init sau
     mesh.setDebugMsgTypes(ERROR);
     mesh.init(MESH_PREFIX, MESH_PASSWORD, &userScheduler, MESH_PORT);
     mesh.onReceive(&receivedCallback);
+
+    // Init OLED SAU khi WiFi đã ổn định
+    delay(500);   // chờ WiFi stack settle hoàn toàn
+    Wire.begin(25, 26);       // OLED1: GPIO25(SDA) / GPIO26(SCL)
+    Wire1_bus.begin(18, 19);  // OLED2: GPIO18(SDA) / GPIO19(SCL)
+    delay(100);               // chờ I2C bus ổn định
+
+    oled1Ready = tryInitOLED1();
+    oled2Ready = tryInitOLED2();
+    // Nếu chưa sáng thì oledTask sẽ retry mỗi 5s
 
     userScheduler.addTask(pingTask);
     userScheduler.addTask(announceTask);
