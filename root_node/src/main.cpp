@@ -1,16 +1,5 @@
 // =====================================================
 // ROOT NODE — Gateway với 2 OLED + Metrics đầy đủ
-//
-// OLED1 (bus Wire,  SDA=21 SCL=22): Nhiệt độ / Độ ẩm realtime
-// OLED2 (bus Wire1, SDA=18 SCL=19): RTT / Loss / Throughput / Entropy
-//
-// Thư viện cần thêm vào platformio.ini:
-//   lib_deps =
-//     painlessMesh
-//     AsyncTCP
-//     adafruit/Adafruit SSD1306
-//     adafruit/Adafruit GFX Library
-// =====================================================
 
 #include <Arduino.h>
 #include "painlessMesh.h"
@@ -74,6 +63,14 @@ struct PathMetrics {
     float    capacity = 0;      // bits/s
     float    capacityMbps = 0;  // Mbps để dễ đọc
     uint32_t lastReceiveTime = 0;  // millis() lần cuối nhận gói
+
+
+
+    // Throughput thực tế — dùng timestamp gói đầu và gói cuối
+    uint32_t thrFirstTs  = 0;    // millis() gói đầu tiên
+    uint32_t thrLastTs   = 0;    // millis() gói gần nhất
+    uint32_t thrBytes    = 0;    // tổng bytes tích lũy
+    float    throughputBps = 0;  // bps
 
 #define PATH_TIMEOUT 10000  // ms không nhận gói → coi path dead
     float activeCapacityMbps() {
@@ -211,7 +208,6 @@ bool tryInitOLED1() {
     display1.setCursor(0, 20);
     display1.println("  OLED1: Sensor Data");
     display1.display();
-    Serial.println("[ROOT] OLED1 OK");
     return true;
 }
 
@@ -225,7 +221,6 @@ bool tryInitOLED2() {
     display2.setCursor(0, 20);
     display2.println("  OLED2: Metrics");
     display2.display();
-    Serial.println("[ROOT] OLED2 OK");
     return true;
 }
 
@@ -286,8 +281,6 @@ void drawOLED2() {
     bool bAlive = pmB.isAlive();
     bool multipath = aAlive && bAlive;
 
-    uint32_t minA = pmA.rttMin == UINT32_MAX ? 0 : pmA.rttMin;
-    uint32_t minB = pmB.rttMin == UINT32_MAX ? 0 : pmB.rttMin;
     float lossRate = (pmA.received + pmA.lost + pmB.received + pmB.lost) > 0 ?
                      (float)(pmA.lost + pmB.lost) /
                      (pmA.received + pmA.lost + pmB.received + pmB.lost) * 100.0f : 0;
@@ -310,15 +303,15 @@ void drawOLED2() {
 
     display2.setTextSize(1);
     display2.setCursor(0, 12);
-    display2.printf("RTT:%u avg:%.0f ms\n",
-                    rttStats.last, rttStats.avg());
-    display2.printf("RTT mn:%u mx:%u ms\n",
-                    rttStats.mn(), rttStats.maxVal);
-    display2.printf("RSSI A:%.0f B:%.0fdBm\n",
-                    pmA.avgRSSI(), pmB.avgRSSI());
+    display2.printf("RTT: %u ms\n", rttStats.last);
+    display2.printf("SNR A:%.0f B:%.0fdB\n",
+                    pmA.avgRSSI() - NOISE_FLOOR_DBM,
+                    pmB.avgRSSI() - NOISE_FLOOR_DBM);
     display2.printf("LOSS:%.1f%%\n", lossRate);
     display2.printf("C_A:%.1fM C_B:%.1fM\n",
                     pmA.activeCapacityMbps(), pmB.activeCapacityMbps());
+    display2.printf("THR A:%.1f B:%.1f bps\n",
+                    pmA.throughputBps, pmB.throughputBps);
     display2.printf("H(T):%.2f H(H):%.2f b\n",
                     entropy.tempEntropy(), entropy.humEntropy());
     display2.display();
@@ -336,13 +329,9 @@ Task oledTask(OLED_UPDATE_INTERVAL, TASK_FOREVER, []() {
         oledLastRetry = now;
         if (!oled1Ready) {
             oled1Ready = tryInitOLED1();
-            if (!oled1Ready)
-                Serial.println("[ROOT] OLED1 retry failed");
         }
         if (!oled2Ready) {
             oled2Ready = tryInitOLED2();
-            if (!oled2Ready)
-                Serial.println("[ROOT] OLED2 retry failed");
         }
     }
 
@@ -355,8 +344,6 @@ Task pingTask(PING_INTERVAL, TASK_FOREVER, []() {
     // Nếu PING trước chưa có PONG → đếm lost
     if (waitingPong) {
         pingLost++;
-        Serial.printf("[ROOT] PING #%u lost (total lost: %u)\n",
-                      pingId, pingLost);
     }
 
     pingId++;
@@ -367,13 +354,13 @@ Task pingTask(PING_INTERVAL, TASK_FOREVER, []() {
     String pingMsg = "PING|" + String(pingId) + "|" + String(pingTs);
     mesh.sendBroadcast(pingMsg);
 
-    Serial.printf("[ROOT] PING #%u sent\n", pingId);
+
 });
 
 // ── Announce task ────────────────────────────────────
 Task announceTask(ANNOUNCE_INTERVAL, TASK_FOREVER, []() {
     mesh.sendBroadcast("ANNOUNCE|" + String(mesh.getNodeId()));
-    Serial.printf("[ROOT] ANNOUNCE nodeId=%u\n", mesh.getNodeId());
+
 });
 
 // ── Tính channel capacity Shannon-Hartley ───────────
@@ -387,6 +374,7 @@ float calcCapacity(int8_t rssi_dbm) {
     float C          = WIFI_BANDWIDTH_HZ * log2f(1.0f + snr_linear);
     return C;   // bits/s
 }
+
 
 // ── Reassembly buffer ───────────────────────────────
 // Khi striping: PATH_A mang temp, PATH_B mang hum
@@ -466,7 +454,7 @@ void handleData(uint32_t from, String &msg) {
         }
     }
     // tokens: [0]=DATA [1]=sensorID [2]=pathID [3]=seq [4]=val [5]=val2orTs [6]=ts
-    if (nTok < 6) { Serial.println("[ROOT] Malformed DATA"); return; }
+    if (nTok < 6) { return; }
 
     String   sensorID     = tokens[1];
     String   pathID       = tokens[2];
@@ -485,9 +473,7 @@ void handleData(uint32_t from, String &msg) {
         sentTs = strtoul(tokens[5].c_str(), NULL, 10);
     }
 
-    // Debug log raw parse
-    Serial.printf("[ROOT] RAW nTok=%d path=%s seq=%u val=%.1f single=%d\n",
-                  nTok, pathID.c_str(), seqNum, val, isSinglePath);
+
 
     PathMetrics *pm = nullptr;
     if      (pathID == "PATH_A") pm = &pmA;
@@ -513,17 +499,14 @@ void handleData(uint32_t from, String &msg) {
         // Single path: tokens[4]=temp, tokens[5]=hum, tokens[6]=ts
         temp = val;              // tokens[4]
         hum  = tokens[5].toFloat();  // tokens[5]
-        Serial.printf("[ROOT] SINGLE seq=%u via %s  T=%.1f H=%.1f\n",
-                      seqNum, pathID.c_str(), temp, hum);
+
     } else {
         // Striping mode
         ReasmEntry *e = findOrCreate(sensorID, seqNum);
         if (pathID == "PATH_A") {
             e->hasA  = true; e->temp = val; e->tsA = sentTs; e->rssiA = rssi;
-            Serial.printf("[ROOT] STRIPE_A seq=%u  temp=%.1f\n", seqNum, val);
         } else {
             e->hasB  = true; e->hum  = val; e->tsB = sentTs; e->rssiB = rssi;
-            Serial.printf("[ROOT] STRIPE_B seq=%u  hum=%.1f\n",  seqNum, val);
         }
 
         // Chờ đủ 2 nửa hoặc timeout
@@ -533,8 +516,7 @@ void handleData(uint32_t from, String &msg) {
                 // Xử lý nửa có được
                 temp = e->hasA ? e->temp : NAN;
                 hum  = e->hasB ? e->hum  : NAN;
-                Serial.printf("[ROOT] REASM TIMEOUT seq=%u  hasA=%d hasB=%d\n",
-                              seqNum, e->hasA, e->hasB);
+
                 e->sensorID = ""; // xóa entry
             } else {
                 return; // chờ nửa còn lại
@@ -542,8 +524,7 @@ void handleData(uint32_t from, String &msg) {
         } else {
             temp = e->temp;
             hum  = e->hum;
-            Serial.printf("[ROOT] REASM OK seq=%u  T=%.1f H=%.1f\n",
-                          seqNum, temp, hum);
+
             e->sensorID = ""; // xóa entry
         }
     }
@@ -554,21 +535,21 @@ void handleData(uint32_t from, String &msg) {
 
     if (!isnan(temp) && !isnan(hum)) entropy.addSample(temp, hum);
 
-    Serial.println("\n========================================");
-    Serial.printf("  SENSOR : %s\n",          sensorID.c_str());
-    Serial.printf("  SEQ    : %u\n",           seqNum);
-    Serial.printf("  TEMP   : %.1f C\n",       isnan(temp)?0:temp);
-    Serial.printf("  HUM    : %.1f %%\n",      isnan(hum)?0:hum);
-    Serial.printf("  RSSI_A : %d dBm  CAP_A=%.2f Mbps\n",
-                  pmA.rssiLast, pmA.activeCapacityMbps());
-    Serial.printf("  RSSI_B : %d dBm  CAP_B=%.2f Mbps\n",
-                  pmB.rssiLast, pmB.activeCapacityMbps());
-    Serial.printf("  LOSS_A : %.1f%%  LOSS_B: %.1f%%\n",
-                  pmA.lossRate(), pmB.lossRate());
-    Serial.printf("  H(T)   : %.3f bits\n",    entropy.tempEntropy());
-    Serial.printf("  H(H)   : %.3f bits\n",    entropy.humEntropy());
-    Serial.printf("  SAMPLES: %u\n",            entropy.count);
-    Serial.println("========================================");
+    // 1 dòng duy nhất — tránh burst Serial làm overflow Web Serial buffer
+    Serial.printf("DATA|%s|%u|T=%.1f|H=%.1f|"
+                  "RSSI_A=%d|CAP_A=%.2f|RSSI_B=%d|CAP_B=%.2f|"
+                  "LOSS_A=%.1f|LOSS_B=%.1f|"
+                  "THR_A=%.2f|THR_B=%.2f|"
+                  "RTT=%u|H(T)=%.3f|H(H)=%.3f|SAMPLES=%u\n",
+                  sensorID.c_str(), seqNum,
+                  isnan(temp)?0.0f:temp, isnan(hum)?0.0f:hum,
+                  pmA.rssiLast, pmA.activeCapacityMbps(),
+                  pmB.rssiLast, pmB.activeCapacityMbps(),
+                  pmA.lossRate(), pmB.lossRate(),
+                  pmA.throughputBps, pmB.throughputBps,
+                  rttStats.last,
+                  entropy.tempEntropy(), entropy.humEntropy(),
+                  entropy.count);
 
     // Cập nhật global state cho OLED1 task
     if (!isnan(temp)) oled1Temp = temp;
@@ -576,6 +557,36 @@ void handleData(uint32_t from, String &msg) {
     oled1Path       = (!isnan(temp)&&!isnan(hum)) ? "A+B" :
                       (!isnan(temp)) ? "PATH_A" : "PATH_B";
     oled1LastUpdate = millis();
+
+    // Throughput tích lũy — tính sau khi dữ liệu đã được xử lý thành công
+    // Throughput — tích lũy bytes, tính từ gói đầu đến gói cuối
+    {
+        uint32_t now2 = millis();
+        uint32_t plen = payload.length();
+        bool hasTemp = !isnan(temp);
+        bool hasHum  = !isnan(hum);
+
+        auto updateThr = [&](PathMetrics* p) {
+            if (p->thrFirstTs == 0) p->thrFirstTs = now2;
+            p->thrLastTs = now2;
+            p->thrBytes += plen;
+            uint32_t span = p->thrLastTs - p->thrFirstTs;
+            if (span > 1000) {  // tính sau ít nhất 1s
+                p->throughputBps = (float)p->thrBytes * 8000.0f / (float)span;
+            }
+        };
+
+        if (hasTemp && hasHum) {
+            updateThr(&pmA);
+            updateThr(&pmB);
+        } else if (hasTemp) {
+            updateThr(&pmA);
+        } else if (hasHum) {
+            updateThr(&pmB);
+        }
+
+
+    }
 }
 
 void handlePong(String &msg) {
@@ -595,8 +606,7 @@ void handlePong(String &msg) {
     rttStats.add(rtt);
     waitingPong = false;
 
-    Serial.printf("[ROOT] PONG #%u  RTT=%u ms  avg=%.0f min=%u max=%u\n",
-                  id, rtt, rttStats.avg(), rttStats.mn(), rttStats.maxVal);
+
 }
 
 void receivedCallback(uint32_t from, String &msg) {
