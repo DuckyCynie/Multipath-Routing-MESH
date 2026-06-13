@@ -104,8 +104,8 @@ Root Node có hai màn hình OLED 128×64 trên hai bus I²C riêng biệt:
 
 | Màn hình | Nội dung |
 |---|---|
-| OLED 1 (SDA=21, SCL=22) | Nhiệt độ, độ ẩm, trạng thái đường truyền |
-| OLED 2 (SDA=18, SCL=19) | RTT, RSSI, packet loss, dung lượng kênh, entropy |
+| OLED 1 | Nhiệt độ, độ ẩm, trạng thái đường truyền |
+| OLED 2 | RTT, SNR, packet loss, dung lượng kênh, thông lượng kênh, entropy |
 
 ---
 
