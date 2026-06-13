@@ -119,21 +119,162 @@ Root Node có hai màn hình OLED 128×64 trên hai bus I²C riêng biệt:
 
 ---
 
-## Cấu hình và nạp firmware
+# Tổng hợp lý thuyết — Ước lượng đặc tính kênh truyền WiFi Mesh
 
-Trước khi nạp cho Relay, chỉnh hai dòng trong `relay_node/src/main.cpp`:
+## 1. Mô hình suy hao tín hiệu — Log-distance Path Loss
 
-    RELAY_PATH = "PATH_A"  và  RELAY_NAME = "RELAY_1"   (cho Relay thứ nhất)
-    RELAY_PATH = "PATH_B"  và  RELAY_NAME = "RELAY_2"   (cho Relay thứ hai)
+**Mục đích:** Ước lượng RSSI tại khoảng cách d từ điểm tham chiếu d₀.
 
-Nạp firmware:
+$$RSSI(d) = RSSI(d_0) - 10n \cdot \log_{10}\left(\frac{d}{d_0}\right) \quad \text{[dBm]}$$
 
-    cd <tên_node>
-    pio run --target upload
-    pio device monitor --baud 115200
+| Tham số | Giá trị | Ý nghĩa |
+|---|---|---|
+| RSSI(d₀) | −40 dBm | RSSI tại d₀ = 1m (chuẩn IEEE 802.11) |
+| n | 2.0 / 2.8 / 3.5 | Path loss exponent (free space / indoor / dense) |
+| d₀ | 1 m | Khoảng cách tham chiếu |
 
 ---
 
-## Liên quan môn học
+## 2. SNR — Tỉ số tín hiệu trên nhiễu
+
+**Mục đích:** Chuyển đổi từ RSSI sang đại lượng quyết định chất lượng kênh.
+
+$$SNR_{dB}(d) = RSSI(d) - NF$$
+
+$$SNR_{linear}(d) = 10^{SNR_{dB}/10}$$
+
+| Tham số | Giá trị | Ý nghĩa |
+|---|---|---|
+| NF | −95 dBm | Noise floor WiFi 2.4GHz |
+| SNR ≥ 25 dB | — | Đạt tốc độ 54 Mbps (802.11g) |
+| SNR ≥ 10 dB | — | Ngưỡng kết nối tối thiểu |
+
+---
+
+## 3. Dung lượng kênh — Shannon-Hartley
+
+**Mục đích:** Tính giới hạn lý thuyết tối đa của lượng thông tin có thể truyền qua kênh, tức giá trị cực đại của lượng tin tương hỗ I(X;Y).
+
+$$C = B \cdot \log_2(1 + SNR_{linear}) \quad \text{[bits/s]}$$
+
+| Tham số | Giá trị | Ý nghĩa |
+|---|---|---|
+| B | 20 MHz | Băng thông kênh WiFi 2.4GHz |
+| SNR_linear | từ công thức (2) | Tỉ số tín hiệu/nhiễu tuyến tính |
+
+> **Lưu ý:** C là giới hạn trên lý thuyết. Throughput thực tế luôn nhỏ hơn C do overhead giao thức, CSMA/CA, retransmission.
+
+---
+
+## 4. Tỉ lệ lỗi bit — BER (BPSK-AWGN)
+
+**Mục đích:** Ước lượng xác suất lỗi mỗi bit trong kênh AWGN với điều chế BPSK.
+
+$$BER = Q\left(\sqrt{2 \cdot SNR_{linear}}\right) = \frac{1}{2} \cdot \text{erfc}\left(\sqrt{SNR_{linear}}\right)$$
+
+Trong đó hàm Q và erfc liên hệ:
+$$Q(x) = \frac{1}{2} \cdot \text{erfc}\left(\frac{x}{\sqrt{2}}\right)$$
+
+---
+
+## 5. Tỉ lệ lỗi gói — PER (BER → PER)
+
+**Mục đích:** Chuyển đổi từ BER sang xác suất mất gói tin (Packet Error Rate).
+
+$$PER = 1 - (1 - BER)^L$$
+
+| Tham số | Giá trị | Ý nghĩa |
+|---|---|---|
+| L | 200 bits (~25 bytes) | Độ dài gói tin ước tính |
+| PER | [0, 1] | Xác suất gói bị lỗi |
+
+---
+
+## 6. Entropy Shannon H(X)
+
+**Mục đích:** Đo lượng thông tin trung bình của nguồn dữ liệu cảm biến.
+
+$$H(X) = -\sum_{i=1}^{N} p(x_i) \cdot \log_2 p(x_i) \quad \text{[bits]}$$
+
+**Phương pháp tính trong hệ thống:**
+- Dữ liệu nhiệt độ và độ ẩm được bin hóa thành 20 bins
+- Xác suất p(xᵢ) = số mẫu trong bin i / tổng số mẫu
+- H(X) tích lũy và ổn định dần theo thời gian
+
+| Trường hợp | Entropy | Ý nghĩa |
+|---|---|---|
+| H(X) = 0 | Nguồn hoàn toàn xác định | Không có thông tin |
+| H(X) = log₂N | Phân phối đều | Thông tin tối đa |
+
+---
+
+## 7. RTT lý thuyết — Mô hình Retransmission
+
+**Mục đích:** Ước lượng Round-Trip Time khi tính đến ảnh hưởng của packet error.
+
+$$RTT(d) = RTT_{base} + N_{hop} \cdot E[retx] \cdot t_{retx}$$
+
+Số lần retransmit trung bình theo phân phối hình học:
+
+$$E[retx] = \frac{PER}{1 - PER}$$
+
+| Tham số | Giá trị | Ý nghĩa |
+|---|---|---|
+| RTT_base | 12 ms | RTT cơ bản (4 hop × 3ms processing) |
+| N_hop | 4 | Số hop PING/PONG: Sensor→R1→Root→R1→Sensor |
+| t_retx | 10 ms | Thời gian mỗi lần retransmit (backoff + resend) |
+
+---
+
+## 8. Throughput ứng dụng lý thuyết
+
+**Mục đích:** Ước lượng throughput thực tế tầng ứng dụng IoT sau khi tính packet loss.
+
+$$Thr_{app}(d) = \frac{L_{payload} \times 8}{T_{send}} \times (1 - PER(d)) \quad \text{[bps]}$$
+
+| Tham số | Giá trị | Ý nghĩa |
+|---|---|---|
+| L_payload | 30 bytes | Kích thước payload DATA message |
+| T_send | 5 s | Chu kỳ gửi của Sensor |
+| Thr_max | 48 bps | Throughput tối đa khi PER = 0 |
+
+---
+
+## 9. Chuỗi phụ thuộc các công thức
+
+```
+d (khoảng cách)
+    │
+    ▼ Công thức (1): Log-distance Path Loss
+RSSI(d)
+    │
+    ▼ Công thức (2): SNR = RSSI - NF
+SNR(d)
+    ├──▶ Công thức (3): C = B·log₂(1+SNR)    → Dung lượng kênh
+    ├──▶ Công thức (4): BER = Q(√(2·SNR))    → Tỉ lệ lỗi bit
+    │         │
+    │         ▼ Công thức (5): PER = 1-(1-BER)^L
+    │        PER(d)
+    │         ├──▶ Công thức (7): RTT = f(PER)      → Trễ
+    │         └──▶ Công thức (8): Thr = Thr_max×(1-PER) → Throughput
+    │
+    └──▶ Công thức (6): H(X) = -Σp·log₂p     → Entropy nguồn
+```
+
+---
+
+## 10. Tham số hệ thống sử dụng
+
+| Tham số | Giá trị | Nguồn |
+|---|---|---|
+| B (bandwidth) | 20 MHz | IEEE 802.11g/n 2.4GHz |
+| NF (noise floor) | −95 dBm | Điển hình WiFi 2.4GHz |
+| RSSI(d₀=1m) | −40 dBm | Chuẩn IEEE 802.11 |
+| n (free space) | 2.0 | Lý thuyết Friis |
+| n (indoor) | 2.8 | ITU-R P.1238 |
+| n (dense indoor) | 3.5 | ITU-R P.1238 |
+| L_packet | 200 bits | Ước tính payload DATA |
+| T_send | 5 s | Cấu hình Sensor node |
+| Bins entropy | 20 | Tham số histogram |
 
 Bài Tập Lớn môn Lý Thuyết Thông Tin 2026. Hệ thống đo thực tế trên phần cứng các chỉ số: độ trễ (RTT), packet loss, dung lượng kênh (Shannon-Hartley), entropy nguồn tin.
