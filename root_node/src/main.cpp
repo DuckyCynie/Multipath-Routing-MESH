@@ -1,5 +1,6 @@
 // =====================================================
 // ROOT NODE — Gateway với 2 OLED + Metrics đầy đủ
+//
 
 #include <Arduino.h>
 #include "painlessMesh.h"
@@ -73,11 +74,19 @@ struct PathMetrics {
     float    throughputBps = 0;  // bps
 
 #define PATH_TIMEOUT 10000  // ms không nhận gói → coi path dead
-    float activeCapacityMbps() {
+
+    // Capacity: luôn giữ giá trị cuối đo được — đặc tính vật lý kênh không đổi
+    float capacityMbps_display() {
+        return capacityMbps;   // không về 0 khi relay tắt
+    }
+
+    // Throughput: về 0 khi path không còn nhận gói
+    float activeThroughputBps() {
         if (lastReceiveTime == 0) return 0;
         if (millis() - lastReceiveTime > PATH_TIMEOUT) return 0;
-        return capacityMbps;
+        return throughputBps;
     }
+
     bool isAlive() {
         return (lastReceiveTime > 0) &&
                (millis() - lastReceiveTime < PATH_TIMEOUT);
@@ -309,9 +318,9 @@ void drawOLED2() {
                     pmB.avgRSSI() - NOISE_FLOOR_DBM);
     display2.printf("LOSS:%.1f%%\n", lossRate);
     display2.printf("C_A:%.1fM C_B:%.1fM\n",
-                    pmA.activeCapacityMbps(), pmB.activeCapacityMbps());
+                    pmA.capacityMbps_display(), pmB.capacityMbps_display());
     display2.printf("THR A:%.1f B:%.1f bps\n",
-                    pmA.throughputBps, pmB.throughputBps);
+                    pmA.activeThroughputBps(), pmB.activeThroughputBps());
     display2.printf("H(T):%.2f H(H):%.2f b\n",
                     entropy.tempEntropy(), entropy.humEntropy());
     display2.display();
@@ -491,6 +500,22 @@ void handleData(uint32_t from, String &msg) {
     pm->lastSeq = seqNum;
     pm->received++;
 
+    // ── Throughput: tích lũy bytes NGAY khi nhận gói ────
+    // Chạy TRƯỚC reassembly để cả 2 path đều được tính
+    // (nếu đặt sau reassembly thì path đến trước bị return sớm → không bao giờ tính)
+    {
+        uint32_t now2 = millis();
+        if (pm->thrFirstTs == 0) {
+            pm->thrFirstTs = now2 > 0 ? now2 - 1 : 1;
+        }
+        pm->thrLastTs = now2;
+        pm->thrBytes += payload.length();
+        uint32_t span = pm->thrLastTs - pm->thrFirstTs;
+        if (span > 0) {
+            pm->throughputBps = (float)pm->thrBytes * 8000.0f / (float)span;
+        }
+    }
+
     // ── Reassembly: ghép 2 nửa lại ──────────────────
     // isSinglePath đã được xác định ở trên bằng nTok >= 7
     float temp = NAN, hum = NAN;
@@ -543,10 +568,10 @@ void handleData(uint32_t from, String &msg) {
                   "RTT=%u|H(T)=%.3f|H(H)=%.3f|SAMPLES=%u\n",
                   sensorID.c_str(), seqNum,
                   isnan(temp)?0.0f:temp, isnan(hum)?0.0f:hum,
-                  pmA.rssiLast, pmA.activeCapacityMbps(),
-                  pmB.rssiLast, pmB.activeCapacityMbps(),
+                  pmA.rssiLast, pmA.capacityMbps_display(),
+                  pmB.rssiLast, pmB.capacityMbps_display(),
                   pmA.lossRate(), pmB.lossRate(),
-                  pmA.throughputBps, pmB.throughputBps,
+                  pmA.activeThroughputBps(), pmB.activeThroughputBps(),
                   rttStats.last,
                   entropy.tempEntropy(), entropy.humEntropy(),
                   entropy.count);
@@ -557,36 +582,6 @@ void handleData(uint32_t from, String &msg) {
     oled1Path       = (!isnan(temp)&&!isnan(hum)) ? "A+B" :
                       (!isnan(temp)) ? "PATH_A" : "PATH_B";
     oled1LastUpdate = millis();
-
-    // Throughput tích lũy — tính sau khi dữ liệu đã được xử lý thành công
-    // Throughput — tích lũy bytes, tính từ gói đầu đến gói cuối
-    {
-        uint32_t now2 = millis();
-        uint32_t plen = payload.length();
-        bool hasTemp = !isnan(temp);
-        bool hasHum  = !isnan(hum);
-
-        auto updateThr = [&](PathMetrics* p) {
-            if (p->thrFirstTs == 0) p->thrFirstTs = now2;
-            p->thrLastTs = now2;
-            p->thrBytes += plen;
-            uint32_t span = p->thrLastTs - p->thrFirstTs;
-            if (span > 1000) {  // tính sau ít nhất 1s
-                p->throughputBps = (float)p->thrBytes * 8000.0f / (float)span;
-            }
-        };
-
-        if (hasTemp && hasHum) {
-            updateThr(&pmA);
-            updateThr(&pmB);
-        } else if (hasTemp) {
-            updateThr(&pmA);
-        } else if (hasHum) {
-            updateThr(&pmB);
-        }
-
-
-    }
 }
 
 void handlePong(String &msg) {
