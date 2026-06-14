@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Mesh Monitor</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{
+  font-family:'Inter',sans-serif;
+  background:#f0f2f5;color:#1a1d23;
+  min-height:100vh;padding:24px;
+  display:flex;flex-direction:column;gap:16px;
+}
+
+/* HEADER */
+.header{
+  display:flex;align-items:center;justify-content:space-between;
+  background:#fff;border-radius:10px;
+  padding:14px 20px;
+  box-shadow:0 1px 3px rgba(0,0,0,.08);
+}
+.title{
+  font-family:'JetBrains Mono',monospace;
+  font-size:13px;font-weight:700;letter-spacing:.15em;
+  text-transform:uppercase;color:#374151;
+  display:flex;align-items:center;gap:10px;
+}
+.live{width:8px;height:8px;border-radius:50%;background:#d1d5db;transition:all .3s}
+.live.on{background:#10b981;box-shadow:0 0 0 3px #10b98128;animation:pulse 1.8s infinite}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 3px #10b98128}50%{box-shadow:0 0 0 6px #10b98112}}
+.conn-row{display:flex;align-items:center;gap:10px}
+.badge{
+  font-family:'JetBrains Mono',monospace;
+  font-size:10px;font-weight:700;letter-spacing:.1em;
+  text-transform:uppercase;padding:4px 10px;border-radius:4px;
+  background:#f3f4f6;color:#9ca3af;border:1px solid #e5e7eb;
+  transition:all .3s;
+}
+.badge.ok {background:#ecfdf5;color:#059669;border-color:#a7f3d0}
+.badge.err{background:#fef2f2;color:#dc2626;border-color:#fca5a5}
+.btn{
+  font-family:'JetBrains Mono',monospace;
+  font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  padding:7px 18px;border-radius:6px;cursor:pointer;
+  border:1px solid #374151;background:#374151;color:#fff;
+  transition:all .15s;
+}
+.btn:hover{background:#1f2937}
+.btn.on{background:#fff;color:#dc2626;border-color:#dc2626}
+.btn.on:hover{background:#fef2f2}
+
+/* PATH STATUS */
+.path-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+.path-card{
+  background:#fff;border-radius:10px;padding:14px 18px;
+  box-shadow:0 1px 3px rgba(0,0,0,.06);
+  display:flex;align-items:center;justify-content:space-between;
+  border:2px solid transparent;transition:all .4s;
+}
+.path-card.a-on{border-color:#10b981;background:#ecfdf5}
+.path-card.b-on{border-color:#3b82f6;background:#eff6ff}
+.path-label{font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;
+  display:flex;align-items:center;gap:8px}
+.pdot{width:8px;height:8px;border-radius:50%;background:#d1d5db;transition:all .3s}
+.pdot.on{background:#10b981;box-shadow:0 0 0 3px #10b98128}
+.pdot.b {background:#3b82f6;box-shadow:0 0 0 3px #3b82f628}
+.path-cnt{font-family:'JetBrains Mono',monospace;font-size:11px;color:#9ca3af}
+
+.mp-banner{
+  text-align:center;padding:10px;border-radius:8px;
+  font-family:'JetBrains Mono',monospace;
+  font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;
+  background:#f9fafb;color:#9ca3af;border:1px solid #e5e7eb;
+  transition:all .3s;
+}
+.mp-banner.multi {background:#ecfdf5;color:#059669;border-color:#a7f3d0}
+.mp-banner.single{background:#fffbeb;color:#d97706;border-color:#fcd34d}
+
+/* METRICS */
+.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.mc{
+  background:#fff;border-radius:10px;padding:18px 20px;
+  box-shadow:0 1px 3px rgba(0,0,0,.06);
+  border-top:3px solid transparent;transition:border-color .3s;
+  position:relative;
+}
+.mc.amber{border-color:#f59e0b}
+.mc.red  {border-color:#ef4444}
+.mc.blue {border-color:#3b82f6}
+.mc.green{border-color:#10b981}
+.mc.indigo{border-color:#6366f1}
+
+.mc-label{
+  font-size:10px;font-weight:600;letter-spacing:.1em;
+  text-transform:uppercase;color:#9ca3af;margin-bottom:10px;
+}
+.mc-val{
+  font-family:'JetBrains Mono',monospace;
+  font-size:36px;font-weight:700;line-height:1;color:#111827;
+}
+.mc-unit{font-size:14px;color:#9ca3af;margin-left:4px;font-weight:400}
+.mc-sub{
+  font-family:'JetBrains Mono',monospace;
+  font-size:10px;color:#9ca3af;margin-top:8px;line-height:1.7;
+}
+
+.ab-row{display:flex;gap:8px;margin-top:10px}
+.ab{
+  flex:1;background:#f9fafb;border-radius:6px;
+  padding:8px 10px;border:1px solid #f3f4f6;
+}
+.ab-lbl{font-size:9px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:#d1d5db;margin-bottom:3px}
+.ab-val{font-family:'JetBrains Mono',monospace;font-size:15px;font-weight:700}
+.ab-val.a{color:#10b981}.ab-val.b{color:#3b82f6}
+
+
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="title"><span class="live" id="live"></span>IoT Mesh Monitor</div>
+  <div class="conn-row">
+    <span class="badge" id="badge">Offline</span>
+    <button class="btn" id="btn" onclick="toggle()">Connect</button>
+  </div>
+</div>
+
+<div class="path-row">
+  <div class="path-card" id="pc-a">
+    <span class="path-label"><span class="pdot" id="pd-a"></span><span style="color:#10b981">PATH_A</span></span>
+    <span class="path-cnt" id="pkt-a">0 pkt</span>
+  </div>
+  <div class="path-card" id="pc-b">
+    <span class="path-label"><span class="pdot" id="pd-b"></span><span style="color:#3b82f6">PATH_B</span></span>
+    <span class="path-cnt" id="pkt-b">0 pkt</span>
+  </div>
+  <div class="mp-banner" id="mp">No signal</div>
+</div>
+
+<div class="metrics">
+
+  <div class="mc amber">
+    <div class="mc-label">RTT</div>
+    <div><span class="mc-val" id="v-rtt">—</span><span class="mc-unit">ms</span></div>
+    <div class="mc-sub" id="s-rtt">avg — · min — · max —</div>
+  </div>
+
+  <div class="mc red">
+    <div class="mc-label">Packet Loss</div>
+    <div><span class="mc-val" id="v-loss">—</span><span class="mc-unit">%</span></div>
+    <div class="mc-sub" id="s-loss">tổng 2 path</div>
+  </div>
+
+  <div class="mc blue">
+    <div class="mc-label">Channel Capacity I(X;Y)</div>
+    <div><span class="mc-val" id="v-cap">—</span><span class="mc-unit">Mbps</span></div>
+    <div class="ab-row">
+      <div class="ab"><div class="ab-lbl">A</div><div class="ab-val a" id="v-cap-a">—</div></div>
+      <div class="ab"><div class="ab-lbl">B</div><div class="ab-val b" id="v-cap-b">—</div></div>
+    </div>
+  </div>
+
+  <div class="mc green">
+    <div class="mc-label">SNR</div>
+    <div><span class="mc-val" id="v-snr">—</span><span class="mc-unit">dB</span></div>
+    <div class="ab-row">
+      <div class="ab"><div class="ab-lbl">A</div><div class="ab-val a" id="v-snr-a">—</div></div>
+      <div class="ab"><div class="ab-lbl">B</div><div class="ab-val b" id="v-snr-b">—</div></div>
+    </div>
+  </div>
+
+  <div class="mc green">
+    <div class="mc-label">Throughput</div>
+    <div><span class="mc-val" id="v-thr">—</span><span class="mc-unit">bps</span></div>
+    <div class="ab-row">
+      <div class="ab"><div class="ab-lbl">A</div><div class="ab-val a" id="v-thr-a">—</div></div>
+      <div class="ab"><div class="ab-lbl">B</div><div class="ab-val b" id="v-thr-b">—</div></div>
+    </div>
+  </div>
+
+  <div class="mc indigo">
+    <div class="mc-label">Entropy Shannon</div>
+    <div class="ab-row" style="margin-top:4px">
+      <div class="ab">
+        <div class="ab-lbl">H(Temp)</div>
+        <div class="ab-val" style="color:#6366f1;font-size:22px" id="v-ht2">—</div>
+        <div style="font-size:9px;color:#d1d5db;margin-top:2px">bits</div>
+      </div>
+      <div class="ab">
+        <div class="ab-lbl">H(Humidity)</div>
+        <div class="ab-val" style="color:#6366f1;font-size:22px" id="v-hh">—</div>
+        <div style="font-size:9px;color:#d1d5db;margin-top:2px">bits</div>
+      </div>
+    </div>
+    <div class="mc-sub" id="s-samples" style="margin-top:10px">— samples</div>
+  </div>
+
+</div>
+
+
+
+<script>
+let port,reader,connected=false,buf='';
+let cntA=0,cntB=0,rttSum=0,rttCnt=0,rttMin=9999,rttMax=0;
+let capA=0,capB=0,rssiA=0,rssiB=0;
+
+const ts=()=>new Date().toLocaleTimeString('vi-VN',{hour12:false});
+const $=id=>document.getElementById(id);
+
+function sv(id,v){const e=$(id);if(e)e.textContent=v}
+
+function updPath(){
+  const aA=capA>0, bA=capB>0, isMulti=aA&&bA;
+  $('pd-a').className='pdot'+(aA?' on':'');
+  $('pd-b').className='pdot'+(bA?' b':'');
+  $('pc-a').className='path-card'+(aA?' a-on':'');
+  $('pc-b').className='path-card'+(bA?' b-on':'');
+  $('pkt-a').textContent=cntA+' pkt';
+  $('pkt-b').textContent=cntB+' pkt';
+  const mpEl=$('mp');
+  if(!mpEl) return;
+  if(isMulti)    {mpEl.className='mp-banner multi'; mpEl.textContent='◆  MULTIPATH  A + B  ACTIVE';}
+  else if(aA)    {mpEl.className='mp-banner single';mpEl.textContent='▶  SINGLE PATH  A';}
+  else if(bA)    {mpEl.className='mp-banner single';mpEl.textContent='▶  SINGLE PATH  B';}
+  else           {mpEl.className='mp-banner';       mpEl.textContent='No signal';}
+}
+
+function parse(line){
+  if(!line.startsWith('DATA|')){
+    if(line.includes('PONG')&&line.includes('RTT=')){return;}
+    if(line.includes('PING')&&line.includes('lost')){return;}
+    if(line.includes('Started')){return;}
+    if(line.startsWith('ets ')||line.startsWith('rst:')||
+       line.startsWith('load:')||line.startsWith('entry')||
+       line.startsWith('setLog')||line.startsWith('config'))return;
+    if(line.trim())
+    return;
+  }
+  const f={};
+  line.split('|').forEach(t=>{const e=t.indexOf('=');if(e>0)f[t.slice(0,e)]=t.slice(e+1)});
+
+  const cA=parseFloat(f['CAP_A']||0),cB=parseFloat(f['CAP_B']||0);
+  if(cA>0)cntA++;if(cB>0)cntB++;
+  capA=cA;capB=cB;
+
+  if(f['RTT']){
+    const r=parseInt(f['RTT']);
+    if(r>0&&r<9999){
+      rttCnt++;rttSum+=r;
+      const avg=Math.round(rttSum/rttCnt);
+      if(r<rttMin)rttMin=r;if(r>rttMax)rttMax=r;
+      sv('v-rtt',r);
+      sv('s-rtt','avg '+avg+' · min '+rttMin+' · max '+rttMax+' ms');
+    }
+  }
+
+  const lA=parseFloat(f['LOSS_A']||0),lB=parseFloat(f['LOSS_B']||0);
+  const lAvg=((lA+lB)/2).toFixed(1);
+  sv('v-loss',lAvg);
+  sv('s-loss','A: '+lA.toFixed(1)+'%  ·  B: '+lB.toFixed(1)+'%');
+
+  const tot=(cA+cB).toFixed(2);
+  sv('v-cap',tot);
+  sv('v-cap-a',cA.toFixed(2));
+  sv('v-cap-b',cB.toFixed(2));
+
+  if(f['RSSI_A'])rssiA=parseInt(f['RSSI_A']);
+  if(f['RSSI_B'])rssiB=parseInt(f['RSSI_B']);
+  const sA=rssiA+95,sB=rssiB+95;
+  const sAvg=cA>0&&cB>0?((sA+sB)/2).toFixed(0):(cA>0?sA:sB);
+  sv('v-snr',sAvg);
+  sv('v-snr-a',sA+' dB');
+  sv('v-snr-b',sB+' dB');
+
+  const tA=parseFloat(f['THR_A']||0),tB=parseFloat(f['THR_B']||0);
+  sv('v-thr',(tA+tB).toFixed(2));
+  sv('v-thr-a',tA.toFixed(2));
+  sv('v-thr-b',tB.toFixed(2));
+
+  if(f['H(T)'])sv('v-ht2',parseFloat(f['H(T)']).toFixed(3));
+  if(f['H(H)'])sv('v-hh',parseFloat(f['H(H)']).toFixed(3));
+  if(f['SAMPLES'])sv('s-samples',f['SAMPLES']+' samples');
+
+  updPath();
+}
+
+async function toggle(){
+  if(connected){
+    connected=false;
+    try{if(reader)await reader.cancel()}catch(e){}
+    try{if(port)await port.close()}catch(e){}
+    $('live').className='live';$('badge').textContent='Offline';
+    $('badge').className='badge';$('btn').textContent='Connect';
+    $('btn').className='btn';return;
+  }
+  if(!('serial' in navigator)){alert('Dùng Chrome hoặc Edge.');return;}
+  try{
+    port=await navigator.serial.requestPort();
+    await port.open({baudRate:115200,bufferSize:16384});
+    connected=true;
+    $('live').className='live on';$('badge').textContent='Connected';
+    $('badge').className='badge ok';$('btn').textContent='Disconnect';
+    $('btn').className='btn on';
+    readLoop();
+  }catch(e){$('badge').textContent='Error';$('badge').className='badge err';}
+}
+
+async function readLoop(){
+  while(connected){
+    try{
+      const dec=new TextDecoderStream();
+      const done=port.readable.pipeTo(dec.writable);
+      reader=dec.readable.getReader();
+      try{
+        while(connected){
+          const{value,done}=await reader.read();
+          if(done)break;
+          buf+=value;
+          let nl;
+          while((nl=buf.indexOf('\n'))>=0){
+            const l=buf.slice(0,nl).replace(/\r|\x00/g,'').trim();
+            buf=buf.slice(nl+1);
+            if(l)parse(l);
+          }
+        }
+      }finally{
+        try{reader.cancel()}catch(e){}
+        try{await done}catch(e){}
+        reader=null;
+      }
+    }catch(e){
+      if(!connected)break;
+      $('badge').textContent='Reconnecting';$('badge').className='badge err';
+      await new Promise(r=>setTimeout(r,1000));
+      try{
+        try{await port.close()}catch(e){}
+        await new Promise(r=>setTimeout(r,500));
+        await port.open({baudRate:115200,bufferSize:16384});
+        buf='';$('badge').textContent='Connected';$('badge').className='badge ok';
+      }catch(e2){await new Promise(r=>setTimeout(r,1000));}
+    }
+  }
+}
+</script>
+</body>
+</html>
